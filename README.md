@@ -1,11 +1,20 @@
-1) Lambda のコードとスクリプト
+# Lambda 関数のエラーをメールで通知する
+
+## 1) Lambda のコードとスクリプト
+
 ディレクトリ構成（例）
+
+```
 project/
 ├─ lambda/
 │  ├─ handler.py
 │  └─ script.sh
 └─ terraform/   （後述の IaC を置く）
-lambda/script.sh（失敗・成功を切り替えやすい例）
+```
+
+`lambda/script.sh`（失敗・成功を切り替えやすい例）
+
+```
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -17,7 +26,11 @@ echo "[script] doing something..."
 
 # 正常終了
 exit 0
+```
+
 lambda/handler.py（Python 3.12 例）
+
+```
 import subprocess
 import logging
 import os
@@ -51,12 +64,20 @@ def lambda_handler(event, context):
     run_script()
     logger.info("handler end")
     return {"ok": True}
+```
+
 ポイント
-失敗時に 必ず ERROR|script_failed ... の固定フォーマットを出すことでメトリクスフィルタの誤検知を防ぎます。
-例外を再スローすると、Lambda の再試行（同期呼び出しなら例外、非同期なら自動再試行／DLQ/再配信ポリシーの連携等）が使えます。
-2) インフラ（Terraform 例）
+
+- 失敗時に 必ず ERROR|script_failed ... の固定フォーマットを出すことでメトリクスフィルタの誤検知を防ぎます。
+- 例外を再スローすると、Lambda の再試行（同期呼び出しなら例外、非同期なら自動再試行／DLQ/再配信ポリシーの連携等）が使えます。
+
+## 2) インフラ（Terraform 例）
+
 下記を terraform/ に配置します。メール通知先は変数で受け取ります。
+
 variables.tf
+
+```
 variable "project_name" {
   type    = string
   default = "lambda-script-monitor"
@@ -65,7 +86,11 @@ variable "project_name" {
 variable "notification_email" {
   type = string
 }
+```
+
 main.tf
+
+```
 terraform {
   required_providers {
     aws = {
@@ -183,10 +208,15 @@ output "lambda_name" {
 output "sns_topic" {
   value = aws_sns_topic.alert_topic.arn
 }
+```
+
 補足
 メトリクスフィルタはログが出たときのみ値 1 を発行します。
-アラームは「合計 ≥ 1（1分間）」で発報。誤検知を避けたい場合はさらに ERROR|script_failed などに絞ってもOK。
-3) デプロイ手順（概略）
+アラームは「合計 ≥ 1（1 分間）」で発報。誤検知を避けたい場合はさらに ERROR|script_failed などに絞っても OK。
+
+## 3) デプロイ手順（概略）
+
+```
 # 1) 依存ファイルに実行権限を付与
 chmod +x ./lambda/script.sh
 
@@ -194,17 +224,22 @@ chmod +x ./lambda/script.sh
 cd terraform
 terraform init
 terraform apply -auto-approve -var="notification_email=あなたのメールアドレス"
-初回、SNS のメール購読に 確認メール が届くので Confirm してください（購読が未確認だと通知が届きません）。
-4) 動作確認（失敗 → ERROR → メール）
-script.sh の exit 42 を有効にして保存（意図的に失敗させる）。
-Lambda を手動実行（テストイベントは空で可）。
-CloudWatch Logs に ERROR|script_failed ... が出力され、メトリクスフィルタが検出。
-アラームが発火し、SNS からメールが届く。
-正常系確認：exit 0 に戻して実行 → ERROR| は出ず、通知も来ない。
-5) 運用上のベストプラクティス
-固定フォーマット：ERROR|code=... のように接頭辞を固定し、アラームの対象を明確化。
-冪等性：スクリプトは同一入力で同じ結果になるよう設計（再試行に耐える）。
-再試行・死活監視：非同期呼び出しなら DLQ / EventBridge リトライポリシー、同期呼び出しなら呼び出し元側で再試行を。
-過検知回避：通常ログで「error」という単語を出さず、必ず大文字の ERROR| のみを通知キーに。
-権限最小化：Lambda 実行ロールは基本ポリシーのみ。S3 等を使う場合は必要最小の追加ポリシーを付与。
+```
 
+初回、SNS のメール購読に 確認メール が届くので Confirm してください（購読が未確認だと通知が届きません）。
+
+## 4) 動作確認（失敗 → ERROR → メール）
+
+- script.sh の exit 42 を有効にして保存（意図的に失敗させる）。
+- Lambda を手動実行（テストイベントは空で可）。
+- CloudWatch Logs に ERROR|script_failed ... が出力され、メトリクスフィルタが検出。
+- アラームが発火し、SNS からメールが届く。
+- 正常系確認：exit 0 に戻して実行 → ERROR| は出ず、通知も来ない。
+
+## 5) 運用上のベストプラクティス
+
+- 固定フォーマット：`ERROR|code=...` のように接頭辞を固定し、アラームの対象を明確化。
+- 冪等性：スクリプトは同一入力で同じ結果になるよう設計（再試行に耐える）。
+- 再試行・死活監視：非同期呼び出しなら DLQ / EventBridge リトライポリシー、同期呼び出しなら呼び出し元側で再試行を。
+- 過検知回避：通常ログで「error」という単語を出さず、必ず大文字の ERROR| のみを通知キーに。
+- 権限最小化：Lambda 実行ロールは基本ポリシーのみ。S3 等を使う場合は必要最小の追加ポリシーを付与。
